@@ -12,19 +12,13 @@ impl Parser {
         if let Err(_) = cursor.read_exact(&mut int_buffer) {
             return Err("Could not read the first 4 bytes of the binary");
         }
-        if i32::from_le_bytes(int_buffer) == i32::from_le_bytes([0x00, 0x61, 0x73, 0x6d]) {
+        if i32::from_le_bytes(int_buffer) != i32::from_le_bytes([0x00, 0x61, 0x73, 0x6d]) {
             return Err("Wrong magic number");
-        }
-        if let Err(_) = cursor.seek(SeekFrom::Current(4)) {
-            return Err("Could not advance cursor");
         }
         if let Err(_) = cursor.read_exact(&mut int_buffer) {
             return Err("Could not read version of the binary");
         }
         let version = i32::from_le_bytes(int_buffer);
-        if let Err(_) = cursor.seek(SeekFrom::Current(4)) {
-            return Err("Could not advance cursor");
-        }
         if let Err(_) = cursor.read_exact(&mut byte_buffer) {
             return Ok(Module {
                 version,
@@ -34,9 +28,6 @@ impl Parser {
         let current_byte = byte_buffer[0];
         if current_byte == 0x00 {
             Parser::parse_section_name(&mut cursor);
-        }
-        if let Err(_) = cursor.seek(SeekFrom::Current(1)) {
-            return Err("Could not advance cursor");
         }
 
         todo!();
