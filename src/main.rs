@@ -1,5 +1,5 @@
 use std::{env, process};
-use wasm_interpreter::{Config, Interpreter};
+use wasm_interpreter::{config::Config, interpreter::Interpreter};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
