@@ -15,6 +15,7 @@ impl Interpreter {
         let module = Decoder::decode(&byte_code).unwrap_or_else(|err| {
             panic!("Error decoding binary: {}", err);
         });
+        dbg!(&module);
         Self.interpret(module).unwrap_or_else(|err| {
             panic!("Error interpreting binary: {}", err);
         });

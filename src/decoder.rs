@@ -1,37 +1,12 @@
 use std::io::{Cursor, Read};
+use crate::codes;
 use crate::module::*;
+use crate::codes::*;
 
 pub struct Decoder;
 
-pub enum Component {
-    CustomComponent,
-    TypeComponent(Vec<FuncType>),
-    FuncsComponent(Vec<Function>),
-    ImportComponent(Vec<Import>),
-    TableComponent(Vec<Table>),
-    MemoryComponent(Vec<Mem>),
-    GlobalComponent(Vec<Global>),
-    ExportComponent(Vec<Export>),
-    DataComponent(Vec<Data>),
-    ElemComonent(Vec<Elem>),
-}
-
 type FunctionSection = Vec<TypeIdx>;
 type CodeSection = Vec<(Vec<ValType>, Expr)>;
-
-const MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6d];
-const CUSTOM_SECTION_CODE: u8 = 0;
-const TYPE_SECTION_CODE: u8 = 1;
-const IMPORT_SECTION_CODE: u8 = 2;
-const FUNCTION_SECTION_CODE: u8 = 3;
-const TABLE_SECTION_CODE: u8 = 4;
-const MEMORY_SECTION_CODE: u8 = 5;
-const GLOBAL_SECTION_CODE: u8 = 6;
-const EXPORT_SECTION_CODE: u8 = 7;
-const START_SECTION_CODE: u8 = 8;
-const ELEMENT_SECTION_CODE: u8 = 9;
-const CODE_SECTION_CODE: u8 = 10;
-const DATA_SECTION_CODE: u8 = 11;
 
 impl Decoder {
     pub fn decode(byte_code: &[u8]) -> Result<Module, &'static str> {
@@ -41,30 +16,37 @@ impl Decoder {
         if version != 1 {
             return Err("Version {version} unsupported. Currently there is only version 1 supported");
         };
-        let mut byte = [0; 1];
-        let mut function_section: Option<FunctionSection>;
-        let mut code_section: Option<CodeSection>;
-        while let Ok(_) = cursor.read_exact(&mut byte) {
-            let section_code = u8::from_le_bytes(byte);
-            if section_code == FUNCTION_SECTION_CODE {
-                function_section = Some(Self::decode_function_section(&mut cursor)?);
-                continue;
-            }
-            if section_code == CODE_SECTION_CODE {
-                code_section = Some(Self::decode_code_section(&mut cursor)?);
-                continue;
-            }
-            let component = Self::decode_section(&mut cursor)?;
-            match component {}
+        let mut function_section = None;
+        let mut code_section = None;
+        let mut module = Module::default();
+        while let Ok(section_code) = cursor.read_byte() {
+            let _section_size = Self::decode_uint(&mut cursor, 32);
+            match section_code {
+                codes::section::CUSTOM => return Err("Custom are not supported"),
+                codes::section::TYPE => module.types = Self::decode_type_section(&mut cursor)?,
+                codes::section::IMPORT => module.imports = Self::decode_import_section(&mut cursor)?,
+                codes::section::CODE => code_section = Some(Self::decode_code_section(&mut cursor)?),
+                codes::section::TABLE => module.table = Self::decode_table_section(&mut cursor)?,
+                codes::section::MEMORY => module.memory = Self::decode_memory_section(&mut cursor)?,
+                codes::section::GLOBAL => module.globals = Self::decode_global_section(&mut cursor)?,
+                codes::section::EXPORT => module.exports = Self::decode_export_section(&mut cursor)?,
+                codes::section::START => module.start = Self::decode_start_section(&mut cursor)?,
+                codes::section::ELEMENT => module.elem = Self::decode_elem_section(&mut cursor)?,
+                codes::section::FUNCTION => function_section = Some(Self::decode_function_section(&mut cursor)?),
+                codes::section::DATA => module.data = Self::decode_data_section(&mut cursor)?,
+                _ => return Err("Unsupported section type")
+            };
         };
-        todo!()
+        if let (Some(fs), Some(cs)) =
+            (function_section, code_section) {
+            module.funcs = Self::build_functions_component(fs, cs);
+        }
+        Ok(module)
     }
 
     fn check_magic_number(cursor: &mut Cursor<&[u8]>) -> Result<(), &'static str> {
         let mut magic_buffer = [0; 4];
-        if let Err(_) = cursor.read_exact(&mut magic_buffer) {
-            return Err("Could not read the first 4 bytes of the binary");
-        }
+        cursor.read_exact_custom(&mut magic_buffer)?;
         if magic_buffer != MAGIC {
             return Err("Wrong binary magic");
         }
@@ -72,18 +54,83 @@ impl Decoder {
     }
 
     fn get_version(cursor: &mut Cursor<&[u8]>) -> Result<u32, &'static str> {
-        let mut version_buffer = [0; 4]; 
-        if let Err(_) = cursor.read_exact(&mut version_buffer) {
-            return Err("Could not read the first 4 bytes of the binary");
-        }
-        let version = u32::from_le_bytes(version_buffer);
+        let version = cursor.read_le_int32()?;
         if version != 1 {
             return Err("Unsupported version {version}. Currently only version 1 is supported")
         }
         Ok(version)
     }
 
-    fn decode_section(cursor: &mut Cursor<&[u8]>) -> Result<Component, &'static str> {
+    fn decode_type_section(cursor: &mut Cursor<&[u8]>) -> Result<TypesComponent, &'static str> {
+        let types_component = Self::process_vector(cursor, |cursor| {
+            let typ = cursor.read_byte()?;
+            if typ != codes::types::FUNCTION {
+                return Err("Wrong elements stored in section type");
+            }
+            let params = Self::process_vector(cursor, |cursor| { Self::decode_val_type(cursor) })?;
+            let results = Self::process_vector(cursor, |cursor| { Self::decode_val_type(cursor) })?;
+            Ok(FuncType { params, results })
+        })?;
+        Ok(types_component)
+    }
+
+    fn decode_import_section(cursor: &mut Cursor<&[u8]>) -> Result<ImportsComponent, &'static str> {
+        let imports_component = Self::process_vector(cursor, |cursor| {
+            let module = Self::decode_string(cursor)?;
+            let name = Self::decode_string(cursor)?;
+            let desc = match cursor.read_byte()? {
+                codes::import_desc::TYPE => ImportDesc::Func(TypeIdx(Self::decode_uint(cursor, 32)?)),
+                codes::import_desc::TABLE => ImportDesc::Table(Self::decode_table_type(cursor)?),
+                codes::import_desc::MEM => ImportDesc::Mem(Self::decode_mem_type(cursor)?),
+                codes::import_desc::GLOBAL => ImportDesc::Global(Self::decode_global_type(cursor)?),
+                _ => return Err("Malicious import description")
+            };
+            Ok(Import { module, name, desc })
+        })?;
+        Ok(imports_component)
+    }
+
+    fn decode_table_section(cursor: &mut Cursor<&[u8]>) -> Result<TableComponent, &'static str> {
+        let table_component = Self::process_vector(cursor, |cursor| {
+            Ok(Table { typ: Self::decode_table_type(cursor)? })
+        })?;
+        if table_component.len() > 1 {
+            return Err("Only one table allowed per module in version 1.0");
+        }
+        Ok(table_component)
+    }
+
+    fn decode_memory_section(cursor: &mut Cursor<&[u8]>) -> Result<MemoryComponent, &'static str> {
+        let memory_component = Self::process_vector(cursor, |cursor| {
+            Ok(Mem{ typ: Self::decode_mem_type(cursor)? })
+        })?;
+        if memory_component.len() > 1 {
+            return Err("Only one memory allowed per module in version 1.0");
+        }
+        Ok(memory_component)
+    }
+
+    fn decode_global_section(cursor: &mut Cursor<&[u8]>) -> Result<GlobalsComponent, &'static str> {
+        let global_component = Self::process_vector(cursor, |cursor| {
+            let init = Self::decode_expression(cursor)?;
+            Ok(Global { typ: Self::decode_global_type(cursor)?, init })
+        })?;
+        Ok(global_component)
+    }
+
+    fn decode_export_section(cursor: &mut Cursor<&[u8]>) -> Result<ExportsComponent, &'static str> {
+        todo!()
+    }
+
+    fn decode_start_section(cursor: &mut Cursor<&[u8]>) -> Result<StartComponent, &'static str> {
+        todo!()
+    }
+
+    fn decode_elem_section(cursor: &mut Cursor<&[u8]>) -> Result<ElemComponent, &'static str> {
+        todo!()
+    }
+
+    fn decode_data_section(cursor: &mut Cursor<&[u8]>) -> Result<DataComponent, &'static str> {
         todo!()
     }
 
@@ -95,100 +142,120 @@ impl Decoder {
         todo!()
     }
 
-    // pub fn parse(byte_code: &[u8]) -> Result<Module, &'static str> {
-        // let mut cursor = Cursor::new(byte_code);
-        // let mut byte_buffer = [0; 1];
-        // let mut int_buffer = [0; 4];
-        // if let Err(_) = cursor.read_exact(&mut int_buffer) {
-        //     return Err("Could not read the first 4 bytes of the binary");
-        // }
-        // if i32::from_le_bytes(int_buffer) != i32::from_le_bytes([0x00, 0x61, 0x73, 0x6d]) {
-        //     return Err("Wrong magic number");
-        // }
-        // if let Err(_) = cursor.read_exact(&mut int_buffer) {
-        //     return Err("Could not read version of the binary");
-        // }
-        // let version = i32::from_le_bytes(int_buffer);
-        // if let Err(_) = cursor.read_exact(&mut byte_buffer) {
-        //     return Ok(Module {
-        //         version,
-        //         functions: Vec::new(),
-        //     });
-        // }
-        // let current_byte = byte_buffer[0];
-        // if current_byte == 0x00 {
-        //     Decoder::parse_section_name(&mut cursor);
-        // }
-        // if current_byte == 0x01 {
-        //     let types = Decoder::parse_section_type(&mut cursor);
-        // }
-        //
-        // todo!();
-    // }
+    fn build_functions_component(function_section: FunctionSection, code_section: CodeSection) -> FuncsComponent {
+        todo!()
+    }
 
-    // fn parse_section_type(cursor: &mut Cursor<&[u8]>) -> Result<Types, &'static str> {
-    //     let mut byte_buffer = [0; 1];
-    //     if let Err(_) = cursor.read_exact(&mut byte_buffer) {
-    //         return Err("Could not read type section section size");
-    //     }
-    //     let mut current_byte = byte_buffer[0];
-    //     if current_byte != 0x00 {
-    //         return Err("Unsupported section size for section type");
-    //     }
-    //     if let Err(_) = cursor.read_exact(&mut byte_buffer) {
-    //         return Err("Could not read type section number of types");
-    //     }
-    //     let num_types = byte_buffer[0];
-    //     let mut types = Vec::new();
-    //     for i in num_types {
-    //         if let Err(_) = cursor.read_exact(&mut byte_buffer) {
-    //             return Err("Could not read type of this type");
-    //         } 
-    //         let type_type = byte_buffer[0];
-    //         if type_type != 0x60 {
-    //             return Err("Other types of types then function type are currently not supported");
-    //         }
-    //         if let Err(_) = cursor.read_exact(&mut byte_buffer) {
-    //             return Err("Could not read number of params");
-    //         } 
-    //         let num_params = byte_buffer[0];
-    //         let mut params = Vec::new();
-    //         for _ in num_params {
-    //             if let Err(_) = cursor.read_exact(&mut byte_buffer) {
-    //                 return Err("Could not read parameter type");
-    //             }
-    //             let param_type = byte_buffer[0];
-    //             if param_type == 0x7f {
-    //                 params.push(PrimitiveType::I32);
-    //             } else {
-    //                 return Err("No other primitive type then i32 is currently supported, lol");
-    //             }
-    //         }
-    //         if let Err(_) = cursor.read_exact(&mut byte_buffer) {
-    //             return Err("Could not read number of results");
-    //         } 
-    //         let num_results = byte_buffer[0];
-    //         let mut results = Vec::new();
-    //         for _ in results {
-    //             if let Err(_) = cursor.read_exact(&mut byte_buffer) {
-    //                 return Err("Could not read parameter type");
-    //             }
-    //             let result_type = byte_buffer[0];
-    //             if result_type == 0x7f {
-    //                 results.push(PrimitiveType::I32);
-    //             } else {
-    //                 return Err("No other primitive type then i32 is currently supported, lol");
-    //             }
-    //         }
-    //         types.push(Type { params, results });
-    //     } 
-    //     if let Err(_) = cursor.read_exact(&mut byte_buffer) {
-    //         return Err("Could not read FIXUP");
-    //     } 
-    //     Ok(types)
-    // }
+    fn decode_table_type(cursor: &mut Cursor<&[u8]>) -> Result<TableType, &'static str> {
+        let elem_type = if cursor.read_byte()? != codes::types::FUNCREF {
+            ElemType::FuncRef
+        } else {
+            return Err("This element type is not supported");
+        };
+        let limits = Self::decode_limits(cursor)?;
+        Ok(TableType(limits, elem_type))
+    }
 
-//     fn parse_section_name(cursor: &mut Cursor<&[u8]>) -> Result<(), &'static str> {
-//         Err("Section name not supported!")
-//     }
+    fn decode_mem_type(cursor: &mut Cursor<&[u8]>) -> Result<MemType, &'static str> {
+        Ok(MemType(Self::decode_limits(cursor)?))
+    }
+
+    fn decode_global_type(cursor: &mut Cursor<&[u8]>) -> Result<GlobalType, &'static str> {
+        let val_type = Self::decode_val_type(cursor)?;
+        let mutablity = match cursor.read_byte()? {
+            codes::types::CONST => Mut::Const,
+            codes::types::VAR => Mut::Var,
+            _ => return Err("Invalid mutability modifier for global")
+        };
+        Ok(GlobalType(mutablity, val_type))
+    }
+
+    fn decode_limits(cursor: &mut Cursor<&[u8]>) -> Result<Limits, &'static str> {
+        todo!()
+    }
+
+    fn decode_val_type(cursor: &mut Cursor<&[u8]>) -> Result<ValType, &'static str> {
+        match cursor.read_byte()? {
+            codes::types::I32 => Ok(ValType::I32),
+            codes::types::I64 => Ok(ValType::I64),
+            codes::types::F32 => Ok(ValType::F32),
+            codes::types::F64 => Ok(ValType::F64),
+            _ => Err("Could not derive a ValType from code {code}")
+        }
+    }
+
+    fn decode_expression(cursor: &mut Cursor<&[u8]>) -> Result<Expr, &'static str> {
+        let mut instructions = Vec::new();
+        let opcode = cursor.read_byte()?;
+        while opcode != codes::expr::END {
+            instructions.push(Self::decode_instruction(cursor, opcode)?);
+        }
+        Ok(Expr(instructions, End))
+    }
+
+    fn decode_instruction(cursor: &mut Cursor<&[u8]>, opcode: u8) -> Result<Instr, &'static str> {
+        let instr = match opcode {
+            codes::instr::UNREACHABLE => Instr::Unreachable,
+            codes::instr::NOP => Instr::Nop,
+            codes::instr::LOCAL_GET => Instr::LocalGet(LocalIdx(Self::decode_uint(cursor, 32)?)),
+            _ => return Err("The instruction with opcode {opcode} is currently not supported")
+        };
+        Ok(instr)
+    }
+
+    fn decode_uint(cursor: &mut Cursor<&[u8]>, size: u32) -> Result<u32, &'static str> {
+        let n: u32 = cursor.read_byte()?.into();
+        if n < 128 && n < 2_u32.pow(size) {
+            Ok(n)
+        } else {
+            Ok(128 * Self::decode_uint(cursor, size - 7)? + (n - 128))
+        }
+    }
+
+    fn process_vector<F, R>(cursor: &mut Cursor<&[u8]>, f: F) -> Result<Vec<R>, &'static str>
+        where
+            F: Fn(&mut Cursor<&[u8]>) -> Result<R, &'static str>,
+    {
+        let length = Self::decode_uint(cursor, 32)?;
+        let mut vec = Vec::default();
+        for _ in 0..length {
+            match f(cursor) {
+                Ok(r) => vec.push(r),
+                Err(err) => return Err("Error processing Vector: {err}"),
+            }
+        }
+        Ok(vec)
+    }
+
+    fn decode_string(cursor: &mut Cursor<&[u8]>) -> Result<String, &'static str> {
+        let length = Self::decode_uint(cursor, 32)?;
+        let mut string = String::default();
+        for _ in 0..length {
+            string.push(cursor.read_byte()? as char); 
+        }
+        Ok(string)
+    }
+}
+
+trait ReadExt: Read {
+    fn read_exact_custom(&mut self, buf: &mut [u8]) -> Result<(), &'static str>;
+    fn read_byte(&mut self) -> Result<u8, &'static str>;
+    fn read_le_int32(&mut self) -> Result<u32, &'static str>;
+}
+impl ReadExt for Cursor<&[u8]> {
+    fn read_exact_custom(&mut self, buf: &mut [u8]) -> Result<(), &'static str> {
+        self.read_exact(buf).map_err(|_| "Buffer read error")
+    }
+
+    fn read_byte(&mut self) -> Result<u8, &'static str> {
+        let mut byte_buf = [0; 1];
+        let _ = self.read_exact_custom(&mut byte_buf)?;
+        Ok(u8::from_le_bytes(byte_buf))
+    }
+
+    fn read_le_int32(&mut self) -> Result<u32, &'static str> {
+        let mut int_buf = [0; 4];
+        let _ = self.read_exact_custom(&mut int_buf)?;
+        Ok(u32::from_le_bytes(int_buf))
+    }
 }
