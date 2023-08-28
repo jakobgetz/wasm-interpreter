@@ -1,27 +1,97 @@
 use std::io::{Cursor, Read};
-use crate::module::Module;
+use crate::module::*;
 
 pub struct Decoder;
+
+pub enum Component {
+    CustomComponent,
+    TypeComponent(Vec<FuncType>),
+    FuncsComponent(Vec<Function>),
+    ImportComponent(Vec<Import>),
+    TableComponent(Vec<Table>),
+    MemoryComponent(Vec<Mem>),
+    GlobalComponent(Vec<Global>),
+    ExportComponent(Vec<Export>),
+    DataComponent(Vec<Data>),
+    ElemComonent(Vec<Elem>),
+}
+
+type FunctionSection = Vec<TypeIdx>;
+type CodeSection = Vec<(Vec<ValType>, Expr)>;
+
+const MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6d];
+const CUSTOM_SECTION_CODE: u8 = 0;
+const TYPE_SECTION_CODE: u8 = 1;
+const IMPORT_SECTION_CODE: u8 = 2;
+const FUNCTION_SECTION_CODE: u8 = 3;
+const TABLE_SECTION_CODE: u8 = 4;
+const MEMORY_SECTION_CODE: u8 = 5;
+const GLOBAL_SECTION_CODE: u8 = 6;
+const EXPORT_SECTION_CODE: u8 = 7;
+const START_SECTION_CODE: u8 = 8;
+const ELEMENT_SECTION_CODE: u8 = 9;
+const CODE_SECTION_CODE: u8 = 10;
+const DATA_SECTION_CODE: u8 = 11;
 
 impl Decoder {
     pub fn decode(byte_code: &[u8]) -> Result<Module, &'static str> {
         let mut cursor = Cursor::new(byte_code);
-        // First check version and Magic number
         Self::check_magic_number(&mut cursor)?;
         let version = Self::get_version(&mut cursor)?;
         if version != 1 {
             return Err("Version {version} unsupported. Currently there is only version 1 supported");
         };
-        // Decode into Module
+        let mut byte = [0; 1];
+        let mut function_section: Option<FunctionSection>;
+        let mut code_section: Option<CodeSection>;
+        while let Ok(_) = cursor.read_exact(&mut byte) {
+            let section_code = u8::from_le_bytes(byte);
+            if section_code == FUNCTION_SECTION_CODE {
+                function_section = Some(Self::decode_function_section(&mut cursor)?);
+                continue;
+            }
+            if section_code == CODE_SECTION_CODE {
+                code_section = Some(Self::decode_code_section(&mut cursor)?);
+                continue;
+            }
+            let component = Self::decode_section(&mut cursor)?;
+            match component {}
+        };
         todo!()
-        // Return this Module the Typechecker will afterwards typecheck it
     }
 
     fn check_magic_number(cursor: &mut Cursor<&[u8]>) -> Result<(), &'static str> {
-        todo!()
+        let mut magic_buffer = [0; 4];
+        if let Err(_) = cursor.read_exact(&mut magic_buffer) {
+            return Err("Could not read the first 4 bytes of the binary");
+        }
+        if magic_buffer != MAGIC {
+            return Err("Wrong binary magic");
+        }
+        Ok(())
     }
 
     fn get_version(cursor: &mut Cursor<&[u8]>) -> Result<u32, &'static str> {
+        let mut version_buffer = [0; 4]; 
+        if let Err(_) = cursor.read_exact(&mut version_buffer) {
+            return Err("Could not read the first 4 bytes of the binary");
+        }
+        let version = u32::from_le_bytes(version_buffer);
+        if version != 1 {
+            return Err("Unsupported version {version}. Currently only version 1 is supported")
+        }
+        Ok(version)
+    }
+
+    fn decode_section(cursor: &mut Cursor<&[u8]>) -> Result<Component, &'static str> {
+        todo!()
+    }
+
+    fn decode_function_section(cursor: &mut Cursor<&[u8]>) -> Result<FunctionSection, &'static str> {
+        todo!()
+    }
+
+    fn decode_code_section(cursor: &mut Cursor<&[u8]>) -> Result<CodeSection, &'static str> {
         todo!()
     }
 
