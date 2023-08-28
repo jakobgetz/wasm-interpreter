@@ -1,4 +1,4 @@
-use crate::{config::Config, module::Module, parser::Parser};
+use crate::{config::Config, module::Module, decoder::Decoder};
 use std::{fs, io::Read};
 
 pub struct Interpreter;
@@ -12,8 +12,8 @@ impl Interpreter {
         wasm_file.read_to_end(&mut byte_code).unwrap_or_else(|_| {
             panic!("Error reading bytes from file {}", config.binary_path);
         });
-        let module = Parser::parse(&byte_code).unwrap_or_else(|err| {
-            panic!("Error parsing binary: {}", err);
+        let module = Decoder::decode(&byte_code).unwrap_or_else(|err| {
+            panic!("Error decoding binary: {}", err);
         });
         Self.interpret(module).unwrap_or_else(|err| {
             panic!("Error interpreting binary: {}", err);
